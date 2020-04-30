@@ -1,0 +1,147 @@
+# Refer to the memo SRDS-383 for details on how to use this template.
+variables:
+  # Specify the code example version. This version is used for tagging the staging repository.
+  CE_REL_VERSION: 1.0.0
+  # Specify the toolchain, separated by spaces. E.g. GCC_ARM IAR ARM
+  CE_TOOLCHAIN_LIST: GCC_ARM IAR
+  # Specify the build configuration, separated by spaces. E.g. Release Debug
+  CE_CONFIG_LIST: Release Debug
+  # Specify the additional build parameters, like verbose output. Leave it empty if not needed.
+  CE_BUILD_PARAM: ""
+  # Specify the file that should be filtered out while staging, separated by spaces. E.g. TARGET_CY8CKIT-062-WIFI-BT.lib TARGET_CY8CKIT-062-BLE.lib
+  # The .gitlab-ci.yml file and .git directory are ignored by default.
+  CE_IGNORE_FILES: .cyignore TARGET_CY8CKIT-062S2-43012.lib
+  # Variable to identify BT-SDK CEs. Specify the BT-SDK branch/tag to be used. Leave it empty for PSoC 6 CEs.
+  CE_BTSDK_TAG: ""
+  # Uncomment the next line and specify the supported targets, only if you want to override the dynamically generated targets list. Mainly used in BT-SDK CEs.
+  # CE_TARGET_LIST: CYW920819EVB-02 CYW920820EVB-02
+  # Variable to identify Secure Boot CEs.
+  CE_SECURE_BOOT: "false"
+
+### DO NOT EDIT THE SECTIONS BELOW ###
+
+  GIT_SUBMODULE_STRATEGY: recursive # Fetch Git submodules
+
+before_script:
+  - set
+
+stages:
+  - test
+  - coverage
+  - deploy
+
+# Template job definition for sanity test
+.test-ce-sanity:
+  stage: test
+  only:
+    changes:
+      # Run only when source files change
+      - "**/*.{c,h,lib,mk}"
+      - Makefile
+      - makefile
+  except:
+    variables:
+      # Prevent running when triggered as part of regression
+      - $REGRESSION == "true"
+  script:
+    - git clone -b develop git@git-ore.aus.cypress.com:wpp/ce/ci.git
+    - bash ci/ce_modus_git.sh --test
+
+# Run code example sanity test on Windows
+test-ce-sanity-windows:
+  extends: .test-ce-sanity
+  tags:
+    - L2APPS-Windows
+
+# Run code example sanity test on macOC
+test-ce-sanity-macos:
+  extends: .test-ce-sanity
+  tags:
+    - L2APPS-macOS
+  variables:
+    # Currently no support of IAR and ARM here.
+    CE_TOOLCHAIN_LIST: GCC_ARM
+
+# Run Coverity analysis on the code example
+analyze-ce-code:
+  stage: coverage
+  tags:
+    - devops-linux
+  only:
+    changes:
+      # Run only when source files change
+      - "**/*.{c,h,mk}"
+      - Makefile
+      - makefile
+    variables:
+      # Prevent execution from sandbox repos
+      - $CI_PROJECT_NAMESPACE == "wpp/ce/mtb"
+  except:
+    variables:
+      # Prevent running when triggered as part of regression
+      - $REGRESSION == "true"
+  script:
+    - git clone -b develop git@git-ore.aus.cypress.com:wpp/ce/ci.git
+    - bash ci/ce_modus_git.sh --analyze
+
+# Check whether the CE structure is as expected
+test-ce-structure:
+  stage: coverage
+  tags:
+    - L2APPS-Regression
+  only:
+    variables:
+      # Prevent execution from sandbox repos
+      - $CI_PROJECT_NAMESPACE == "wpp/ce/mtb"
+  except:
+    variables:
+      # Prevent running when triggered as part of regression
+      - $REGRESSION == "true"
+  script:
+    - git clone -b develop git@git-ore.aus.cypress.com:wpp/ce/ci.git
+    - bash ci/ce_modus_git.sh --format
+
+# Push the code example to staging repository and promote the tags
+promote-ce-staging:
+  stage: deploy
+  tags:
+    - devops-assets
+  only:
+    refs:
+      # Branch which should be pushed to staging repository
+      - develop
+    variables:
+      # Prevent deploy from sandbox repos
+      - $CI_PROJECT_NAMESPACE == "wpp/ce/mtb"
+  except:
+    variables:
+      # Prevent running when triggered as part of regression
+      - $REGRESSION == "true"
+  script:
+    # Push the CE to staging repo. Also add LICENSE file
+    - git clone -b develop git@git-ore.aus.cypress.com:wpp/ce/ci.git
+    - bash ci/ce_modus_git.sh --stage
+    # Promote the CE to add release tags (on staging repo)
+    - bash -c 'rm -rf ci $CI_PROJECT_NAME'
+    - git clone -b develop git@git-ore.aus.cypress.com:repo-staging/ci.git
+    - bash -c 'env PROMOTE_ASSET=$CI_PROJECT_NAME STAGING_REVISION=$CE_REL_VERSION.$CI_PIPELINE_IID ci/job_promote_asset.sh'
+    # Update the CE manifest file with new version
+    - rm -rf ci staging_repos
+    - git clone -b develop git@git-ore.aus.cypress.com:wpp/ce/ci.git
+    - bash ci/ce_modus_git.sh --manifest
+
+# Run scheduled regression test on the code example
+test-ce-regression:
+  stage: test
+  tags:
+    - L2APPS-Regression
+  only:
+    refs:
+      # Branch which should be pushed to staging repository
+      - develop
+    variables:
+      # Run only when triggered as part of regression
+      - $REGRESSION == "true"
+  script:
+    - git clone -b develop git@git-ore.aus.cypress.com:wpp/ce/ci.git
+    - bash ci/ce_modus_git.sh --regress
